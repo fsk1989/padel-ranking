@@ -2,10 +2,40 @@ import streamlit as st
 from sqlalchemy import text
 
 st.set_page_config(
-    page_title="MPT Padel Ranking",
+    page_title="Middelfart Padelteam - rangliste",
     page_icon="🎾",
     layout="centered"
 )
+
+# -----------------------------
+# LOGIN
+# -----------------------------
+
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if not st.session_state.logged_in:
+
+    st.title("🎾 MPT Padel Ranking")
+    st.write("Log ind for at få adgang til ranglisten.")
+
+    password = st.text_input(
+        "Kodeord",
+        type="password"
+    )
+
+    if st.button(
+        "Log ind",
+        type="primary",
+        use_container_width=True
+    ):
+        if password == st.secrets["APP_PASSWORD"]:
+            st.session_state.logged_in = True
+            st.rerun()
+        else:
+            st.error("Forkert kodeord")
+
+    st.stop()
 
 conn = st.connection("supabase", type="sql")
 
