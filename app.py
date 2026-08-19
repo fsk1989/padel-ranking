@@ -264,8 +264,8 @@ page = st.sidebar.radio(
 
 if page == "🏆 Rangliste":
 
-    st.title("🎾 MPT Padel Ranking")
-    st.subheader("🏆 ELO rangliste")
+    st.title("🎾 Middelfart Padelteam")
+    st.subheader("🏆 Rangliste")
 
     players = get_players()
 
