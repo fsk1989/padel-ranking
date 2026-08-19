@@ -1,5 +1,4 @@
 import streamlit as st
-import pandas as pd
 from sqlalchemy import text
 
 st.set_page_config(
@@ -8,10 +7,9 @@ st.set_page_config(
     layout="centered"
 )
 
-# -----------------------------
-# DATABASE
-# -----------------------------
 conn = st.connection("supabase", type="sql")
+
+K_FACTOR = 32
 
 
 def get_players():
@@ -25,30 +23,215 @@ def get_players():
     )
 
 
-# -----------------------------
-# ELO
-# -----------------------------
-K_FACTOR = 32
-
-
 def expected_score(rating_a, rating_b):
     return 1 / (1 + 10 ** ((rating_b - rating_a) / 400))
 
 
+def register_match(
+    players,
+    t1p1,
+    t1p2,
+    t2p1,
+    t2p2,
+    winner
+):
+    selected = [t1p1, t1p2, t2p1, t2p2]
+
+    if len(set(selected)) != 4:
+        st.error("De fire spillere skal være forskellige.")
+        return
+
+    selected_players = players[
+        players["name"].isin(selected)
+    ].copy()
+
+    data = {
+        row["name"]: row
+        for _, row in selected_players.iterrows()
+    }
+
+    team1_rating = (
+        int(data[t1p1]["elo"]) +
+        int(data[t1p2]["elo"])
+    ) / 2
+
+    team2_rating = (
+        int(data[t2p1]["elo"]) +
+        int(data[t2p2]["elo"])
+    ) / 2
+
+    expected_team1 = expected_score(
+        team1_rating,
+        team2_rating
+    )
+
+    actual_team1 = 1 if winner == 1 else 0
+
+    team1_change = round(
+        K_FACTOR *
+        (actual_team1 - expected_team1)
+    )
+
+    team2_change = -team1_change
+
+    ids = {
+        name: int(data[name]["player_id"])
+        for name in selected
+    }
+
+    with conn.session as session:
+
+        result = session.execute(
+            text("""
+                INSERT INTO matches (
+                    team1_player1,
+                    team1_player2,
+                    team2_player1,
+                    team2_player2,
+                    winner
+                )
+                VALUES (
+                    :t1p1,
+                    :t1p2,
+                    :t2p1,
+                    :t2p2,
+                    :winner
+                )
+                RETURNING match_id
+            """),
+            {
+                "t1p1": ids[t1p1],
+                "t1p2": ids[t1p2],
+                "t2p1": ids[t2p1],
+                "t2p2": ids[t2p2],
+                "winner": winner
+            }
+        )
+
+        match_id = result.scalar_one()
+
+        changes = {
+            t1p1: team1_change,
+            t1p2: team1_change,
+            t2p1: team2_change,
+            t2p2: team2_change
+        }
+
+        for name, change in changes.items():
+
+            old_elo = int(data[name]["elo"])
+            new_elo = old_elo + change
+
+            won = (
+                winner == 1 and name in [t1p1, t1p2]
+            ) or (
+                winner == 2 and name in [t2p1, t2p2]
+            )
+
+            session.execute(
+                text("""
+                    UPDATE players
+                    SET
+                        elo = :new_elo,
+                        matches_played = matches_played + 1,
+                        wins = wins + :win,
+                        losses = losses + :loss
+                    WHERE player_id = :player_id
+                """),
+                {
+                    "new_elo": new_elo,
+                    "win": 1 if won else 0,
+                    "loss": 0 if won else 1,
+                    "player_id": ids[name]
+                }
+            )
+
+            session.execute(
+                text("""
+                    INSERT INTO elo_history (
+                        match_id,
+                        player_id,
+                        elo_before,
+                        elo_change,
+                        elo_after
+                    )
+                    VALUES (
+                        :match_id,
+                        :player_id,
+                        :elo_before,
+                        :elo_change,
+                        :elo_after
+                    )
+                """),
+                {
+                    "match_id": match_id,
+                    "player_id": ids[name],
+                    "elo_before": old_elo,
+                    "elo_change": change,
+                    "elo_after": new_elo
+                }
+            )
+
+        session.commit()
+
+    if winner == 1:
+        winners = f"{t1p1} & {t1p2}"
+    else:
+        winners = f"{t2p1} & {t2p2}"
+
+    st.success(f"🏆 {winners} vandt!")
+
+    st.write("### ELO-ændringer")
+
+    st.write(
+        f"{t1p1}: "
+        f"{int(data[t1p1]['elo'])} → "
+        f"{int(data[t1p1]['elo']) + team1_change} "
+        f"({team1_change:+d})"
+    )
+
+    st.write(
+        f"{t1p2}: "
+        f"{int(data[t1p2]['elo'])} → "
+        f"{int(data[t1p2]['elo']) + team1_change} "
+        f"({team1_change:+d})"
+    )
+
+    st.write(
+        f"{t2p1}: "
+        f"{int(data[t2p1]['elo'])} → "
+        f"{int(data[t2p1]['elo']) + team2_change} "
+        f"({team2_change:+d})"
+    )
+
+    st.write(
+        f"{t2p2}: "
+        f"{int(data[t2p2]['elo'])} → "
+        f"{int(data[t2p2]['elo']) + team2_change} "
+        f"({team2_change:+d})"
+    )
+
+
 # -----------------------------
-# SIDEBAR
+# MENU
 # -----------------------------
+
 st.sidebar.title("🎾 MPT Padel")
 
 page = st.sidebar.radio(
     "Menu",
-    ["🏆 Rangliste", "➕ Registrer kamp", "📋 Kamphistorik"]
+    [
+        "🏆 Rangliste",
+        "➕ Registrer kamp",
+        "📋 Kamphistorik"
+    ]
 )
 
 
 # =========================================================
 # RANGLISTE
 # =========================================================
+
 if page == "🏆 Rangliste":
 
     st.title("🎾 MPT Padel Ranking")
@@ -66,18 +249,24 @@ if page == "🏆 Rangliste":
 
         table["Win %"] = table.apply(
             lambda row: round(
-                row["wins"] / row["matches_played"] * 100, 1
-            ) if row["matches_played"] > 0 else 0,
+                row["wins"] /
+                row["matches_played"] * 100,
+                1
+            )
+            if row["matches_played"] > 0
+            else 0,
             axis=1
         )
 
-        table = table.rename(columns={
-            "name": "Spiller",
-            "elo": "ELO",
-            "matches_played": "Kampe",
-            "wins": "Sejre",
-            "losses": "Nederlag"
-        })
+        table = table.rename(
+            columns={
+                "name": "Spiller",
+                "elo": "ELO",
+                "matches_played": "Kampe",
+                "wins": "Sejre",
+                "losses": "Nederlag"
+            }
+        )
 
         st.dataframe(
             table[
@@ -99,12 +288,12 @@ if page == "🏆 Rangliste":
 # =========================================================
 # REGISTRER KAMP
 # =========================================================
+
 elif page == "➕ Registrer kamp":
 
     st.title("➕ Registrer kamp")
 
     players = get_players()
-
     player_names = players["name"].tolist()
 
     if len(player_names) < 4:
@@ -142,300 +331,110 @@ elif page == "➕ Registrer kamp":
         key="t2p2"
     )
 
-    st.divider()
+    selected = [t1p1, t1p2, t2p1, t2p2]
 
-    st.subheader("Resultat")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.markdown("**Hold 1**")
-
-    with col2:
-        st.markdown("**Hold 2**")
-
-    # Sæt 1
-    col1, col2 = st.columns(2)
-
-    with col1:
-        s1a = st.number_input(
-            "Sæt 1",
-            min_value=0,
-            max_value=20,
-            value=6
+    if len(set(selected)) != 4:
+        st.warning(
+            "Vælg fire forskellige spillere."
         )
+        st.stop()
 
-    with col2:
-        s1b = st.number_input(
-            "Sæt 1 ",
-            min_value=0,
-            max_value=20,
-            value=4
-        )
-
-    # Sæt 2
-    col1, col2 = st.columns(2)
-
-    with col1:
-        s2a = st.number_input(
-            "Sæt 2",
-            min_value=0,
-            max_value=20,
-            value=6
-        )
-
-    with col2:
-        s2b = st.number_input(
-            "Sæt 2 ",
-            min_value=0,
-            max_value=20,
-            value=4
-        )
-
-    # Sæt 3
-    col1, col2 = st.columns(2)
-
-    with col1:
-        s3a = st.number_input(
-            "Sæt 3",
-            min_value=0,
-            max_value=30,
-            value=0
-        )
-
-    with col2:
-        s3b = st.number_input(
-            "Sæt 3 ",
-            min_value=0,
-            max_value=30,
-            value=0
-        )
-
-    st.divider()
-
-    if st.button(
-        "🎾 Registrer kamp",
-        type="primary",
-        use_container_width=True
-    ):
-
-        selected = [t1p1, t1p2, t2p1, t2p2]
-
-        if len(set(selected)) != 4:
-            st.error("De fire spillere skal være forskellige.")
-            st.stop()
-
-        # Find antal vundne sæt
-        team1_sets = 0
-        team2_sets = 0
-
-        for a, b in [(s1a, s1b), (s2a, s2b), (s3a, s3b)]:
-
-            if a > b:
-                team1_sets += 1
-
-            elif b > a:
-                team2_sets += 1
-
-        if team1_sets == team2_sets:
-            st.error(
-                "Resultatet giver ikke en entydig vinder."
-            )
-            st.stop()
-
-        winner = 1 if team1_sets > team2_sets else 2
-
-        # Hent de fire spillere
-        selected_players = players[
+    data = {
+        row["name"]: row
+        for _, row in players[
             players["name"].isin(selected)
-        ].copy()
+        ].iterrows()
+    }
 
-        data = {
-            row["name"]: row
-            for _, row in selected_players.iterrows()
-        }
-
-        # Holdenes gennemsnitlige ELO
-        team1_rating = (
-            data[t1p1]["elo"] +
-            data[t1p2]["elo"]
+    team1_rating = round(
+        (
+            int(data[t1p1]["elo"]) +
+            int(data[t1p2]["elo"])
         ) / 2
+    )
 
-        team2_rating = (
-            data[t2p1]["elo"] +
-            data[t2p2]["elo"]
+    team2_rating = round(
+        (
+            int(data[t2p1]["elo"]) +
+            int(data[t2p2]["elo"])
         ) / 2
+    )
 
-        expected_team1 = expected_score(
-            team1_rating,
-            team2_rating
+    chance1 = expected_score(
+        team1_rating,
+        team2_rating
+    )
+
+    chance2 = 1 - chance1
+
+    st.divider()
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### Hold 1")
+        st.write(f"**{t1p1}**")
+        st.write(f"**{t1p2}**")
+        st.caption(
+            f"Gennemsnitlig ELO: {team1_rating}"
+        )
+        st.metric(
+            "Forventet vinderchance",
+            f"{chance1 * 100:.0f}%"
         )
 
-        actual_team1 = 1 if winner == 1 else 0
-
-        elo_change = round(
-            K_FACTOR *
-            (actual_team1 - expected_team1)
+    with col2:
+        st.markdown("### Hold 2")
+        st.write(f"**{t2p1}**")
+        st.write(f"**{t2p2}**")
+        st.caption(
+            f"Gennemsnitlig ELO: {team2_rating}"
+        )
+        st.metric(
+            "Forventet vinderchance",
+            f"{chance2 * 100:.0f}%"
         )
 
-        # Hvis hold 1 vinder, er ændringen positiv.
-        # Hvis hold 2 vinder, er den negativ.
-        team1_change = elo_change
-        team2_change = -elo_change
+    st.divider()
 
-        ids = {
-            name: int(data[name]["player_id"])
-            for name in selected
-        }
+    st.subheader("Hvem vandt?")
 
-        with conn.session as session:
+    button1, button2 = st.columns(2)
 
-            # Gem kampen
-            result = session.execute(
-                text("""
-                    INSERT INTO matches (
-                        team1_player1,
-                        team1_player2,
-                        team2_player1,
-                        team2_player2,
-                        set1_team1,
-                        set1_team2,
-                        set2_team1,
-                        set2_team2,
-                        set3_team1,
-                        set3_team2,
-                        winner
-                    )
-                    VALUES (
-                        :t1p1,
-                        :t1p2,
-                        :t2p1,
-                        :t2p2,
-                        :s1a,
-                        :s1b,
-                        :s2a,
-                        :s2b,
-                        :s3a,
-                        :s3b,
-                        :winner
-                    )
-                    RETURNING match_id
-                """),
-                {
-                    "t1p1": ids[t1p1],
-                    "t1p2": ids[t1p2],
-                    "t2p1": ids[t2p1],
-                    "t2p2": ids[t2p2],
-                    "s1a": s1a,
-                    "s1b": s1b,
-                    "s2a": s2a,
-                    "s2b": s2b,
-                    "s3a": s3a,
-                    "s3b": s3b,
-                    "winner": winner
-                }
+    with button1:
+        if st.button(
+            "🏆 Hold 1 vandt",
+            type="primary",
+            use_container_width=True
+        ):
+            register_match(
+                players,
+                t1p1,
+                t1p2,
+                t2p1,
+                t2p2,
+                1
             )
 
-            match_id = result.scalar_one()
-
-            # Opdater alle fire spillere
-            changes = {
-                t1p1: team1_change,
-                t1p2: team1_change,
-                t2p1: team2_change,
-                t2p2: team2_change
-            }
-
-            for name, change in changes.items():
-
-                old_elo = int(data[name]["elo"])
-                new_elo = old_elo + change
-
-                won = (
-                    (winner == 1 and name in [t1p1, t1p2])
-                    or
-                    (winner == 2 and name in [t2p1, t2p2])
-                )
-
-                session.execute(
-                    text("""
-                        UPDATE players
-                        SET
-                            elo = :new_elo,
-                            matches_played = matches_played + 1,
-                            wins = wins + :win,
-                            losses = losses + :loss
-                        WHERE player_id = :player_id
-                    """),
-                    {
-                        "new_elo": new_elo,
-                        "win": 1 if won else 0,
-                        "loss": 0 if won else 1,
-                        "player_id": ids[name]
-                    }
-                )
-
-                session.execute(
-                    text("""
-                        INSERT INTO elo_history (
-                            match_id,
-                            player_id,
-                            elo_before,
-                            elo_change,
-                            elo_after
-                        )
-                        VALUES (
-                            :match_id,
-                            :player_id,
-                            :elo_before,
-                            :elo_change,
-                            :elo_after
-                        )
-                    """),
-                    {
-                        "match_id": match_id,
-                        "player_id": ids[name],
-                        "elo_before": old_elo,
-                        "elo_change": change,
-                        "elo_after": new_elo
-                    }
-                )
-
-            session.commit()
-
-        st.success("🎉 Kampen er registreret!")
-
-        if winner == 1:
-            st.write(
-                f"**{t1p1} & {t1p2} vandt kampen**"
+    with button2:
+        if st.button(
+            "🏆 Hold 2 vandt",
+            use_container_width=True
+        ):
+            register_match(
+                players,
+                t1p1,
+                t1p2,
+                t2p1,
+                t2p2,
+                2
             )
-        else:
-            st.write(
-                f"**{t2p1} & {t2p2} vandt kampen**"
-            )
-
-        st.write("### ELO ændringer")
-
-        st.write(
-            f"{t1p1}: {team1_change:+d}"
-        )
-
-        st.write(
-            f"{t1p2}: {team1_change:+d}"
-        )
-
-        st.write(
-            f"{t2p1}: {team2_change:+d}"
-        )
-
-        st.write(
-            f"{t2p2}: {team2_change:+d}"
-        )
 
 
 # =========================================================
 # KAMPHISTORIK
 # =========================================================
+
 elif page == "📋 Kamphistorik":
 
     st.title("📋 Kamphistorik")
@@ -443,20 +442,13 @@ elif page == "📋 Kamphistorik":
     matches = conn.query(
         """
         SELECT
+            m.match_id,
             m.match_date,
 
             p1.name AS team1_player1,
             p2.name AS team1_player2,
-
             p3.name AS team2_player1,
             p4.name AS team2_player2,
-
-            m.set1_team1,
-            m.set1_team2,
-            m.set2_team1,
-            m.set2_team2,
-            m.set3_team1,
-            m.set3_team2,
 
             m.winner
 
@@ -481,7 +473,9 @@ elif page == "📋 Kamphistorik":
 
     if matches.empty:
 
-        st.info("Der er endnu ikke registreret nogen kampe.")
+        st.info(
+            "Der er endnu ikke registreret nogen kampe."
+        )
 
     else:
 
@@ -497,24 +491,23 @@ elif page == "📋 Kamphistorik":
                 f"{match['team2_player2']}"
             )
 
-            score = (
-                f"{match['set1_team1']}-{match['set1_team2']}, "
-                f"{match['set2_team1']}-{match['set2_team2']}"
-            )
-
-            if (
-                match["set3_team1"] != 0
-                or match["set3_team2"] != 0
-            ):
-                score += (
-                    f", {match['set3_team1']}-"
-                    f"{match['set3_team2']}"
-                )
+            if match["winner"] == 1:
+                winner_text = f"🏆 {team1}"
+            else:
+                winner_text = f"🏆 {team2}"
 
             st.markdown(
                 f"**{team1}**  vs  **{team2}**"
             )
 
-            st.write(f"Resultat: {score}")
+            st.write(
+                f"Vinder: **{winner_text}**"
+            )
+
+            st.caption(
+                match["match_date"].strftime(
+                    "%d-%m-%Y %H:%M"
+                )
+            )
 
             st.divider()
