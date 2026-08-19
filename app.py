@@ -2,7 +2,7 @@ import streamlit as st
 from sqlalchemy import text
 
 st.set_page_config(
-    page_title="Middelfart Padelteam - rangliste",
+    page_title="Middelfart Padelteam",
     page_icon="🎾",
     layout="centered"
 )
