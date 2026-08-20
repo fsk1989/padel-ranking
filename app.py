@@ -4,7 +4,95 @@ from sqlalchemy import text
 st.set_page_config(
     page_title="Middelfart Padelteam",
     page_icon="🎾",
-    layout="centered"
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
+
+# =========================================================
+# MOBIL CSS
+# =========================================================
+
+st.markdown(
+    """
+    <style>
+    .block-container {
+        max-width: 720px;
+        padding-top: 1rem;
+        padding-left: 0.9rem;
+        padding-right: 0.9rem;
+        padding-bottom: 2rem;
+    }
+
+    h1 {
+        font-size: 1.9rem !important;
+        margin-bottom: 0.4rem !important;
+    }
+
+    h2, h3 {
+        margin-top: 0.8rem !important;
+    }
+
+    div[data-testid="stButton"] > button {
+        min-height: 52px;
+        border-radius: 12px;
+        font-size: 1rem;
+        font-weight: 600;
+    }
+
+    div[data-baseweb="select"] > div {
+        min-height: 50px;
+        border-radius: 10px;
+    }
+
+    div[data-testid="stTextInput"] input {
+        min-height: 50px;
+        font-size: 16px !important;
+    }
+
+    .player-card {
+        padding: 14px 16px;
+        border: 1px solid rgba(128, 128, 128, 0.25);
+        border-radius: 14px;
+        margin-bottom: 10px;
+    }
+
+    .rank-number {
+        font-size: 1.25rem;
+        font-weight: 700;
+        margin-right: 8px;
+    }
+
+    .player-name {
+        font-size: 1.08rem;
+        font-weight: 700;
+    }
+
+    .player-stats {
+        margin-top: 4px;
+        opacity: 0.75;
+        font-size: 0.93rem;
+    }
+
+    .match-card {
+        padding: 14px 16px;
+        border: 1px solid rgba(128, 128, 128, 0.25);
+        border-radius: 14px;
+        margin-bottom: 10px;
+    }
+
+    @media (max-width: 600px) {
+        .block-container {
+            padding-left: 0.75rem;
+            padding-right: 0.75rem;
+        }
+
+        h1 {
+            font-size: 1.6rem !important;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
 )
 
 # =========================================================
@@ -16,12 +104,13 @@ if "logged_in" not in st.session_state:
 
 if not st.session_state.logged_in:
 
-    st.title("🎾 Middelfart Padelteam - Rangliste")
-    st.write("Log ind for at få adgang til ranglisten.")
+    st.title("🎾 Middelfart Padelteam")
+    st.subheader("Rangliste")
 
     password = st.text_input(
         "Kodeord",
-        type="password"
+        type="password",
+        placeholder="Indtast kodeord"
     )
 
     if st.button(
@@ -49,7 +138,7 @@ START_ELO = 1500
 
 
 # =========================================================
-# HENT SPILLERE
+# DATABASE-FUNKTIONER
 # =========================================================
 
 def get_players():
@@ -69,30 +158,18 @@ def get_players():
     )
 
 
-# =========================================================
-# ELO
-# =========================================================
-
 def expected_score(rating_a, rating_b):
     return 1 / (
         1 + 10 ** ((rating_b - rating_a) / 400)
     )
 
 
-# =========================================================
-# GENBEREGN HELE RANGLISTEN
-# =========================================================
-
 def recalculate_ranking(session):
 
-    # Fjern den eksisterende ELO-historik
     session.execute(
-        text("""
-            DELETE FROM elo_history
-        """)
+        text("DELETE FROM elo_history")
     )
 
-    # Nulstil alle spillere
     session.execute(
         text("""
             UPDATE players
@@ -107,7 +184,6 @@ def recalculate_ranking(session):
         }
     )
 
-    # Hent alle spillere
     player_rows = session.execute(
         text("""
             SELECT player_id
@@ -120,7 +196,6 @@ def recalculate_ranking(session):
         for row in player_rows
     }
 
-    # Hent alle kampe i den rækkefølge de blev spillet
     matches = session.execute(
         text("""
             SELECT
@@ -131,7 +206,9 @@ def recalculate_ranking(session):
                 team2_player2,
                 winner
             FROM matches
-            ORDER BY match_date ASC, match_id ASC
+            ORDER BY
+                match_date ASC,
+                match_id ASC
         """)
     ).mappings().all()
 
@@ -146,7 +223,6 @@ def recalculate_ranking(session):
 
         winner = int(match["winner"])
 
-        # Holdenes gennemsnitlige ELO
         team1_rating = (
             ratings[t1p1] +
             ratings[t1p2]
@@ -157,7 +233,6 @@ def recalculate_ranking(session):
             ratings[t2p2]
         ) / 2
 
-        # Forventet vinderchance
         expected_team1 = expected_score(
             team1_rating,
             team2_rating
@@ -167,7 +242,6 @@ def recalculate_ranking(session):
             1 if winner == 1 else 0
         )
 
-        # ELO-ændring
         team1_change = round(
             K_FACTOR *
             (
@@ -185,7 +259,6 @@ def recalculate_ranking(session):
             t2p2: team2_change
         }
 
-        # Opdater alle fire spillere
         for player_id, change in changes.items():
 
             old_elo = ratings[player_id]
@@ -251,9 +324,58 @@ def recalculate_ranking(session):
             ratings[player_id] = new_elo
 
 
-# =========================================================
-# REGISTRER KAMP
-# =========================================================
+def create_player(name):
+
+    clean_name = name.strip()
+
+    if clean_name == "":
+        return False, "Du skal indtaste et navn."
+
+    with conn.session as session:
+
+        existing_player = session.execute(
+            text("""
+                SELECT player_id
+                FROM players
+                WHERE LOWER(TRIM(name)) =
+                      LOWER(:name)
+                LIMIT 1
+            """),
+            {
+                "name": clean_name
+            }
+        ).first()
+
+        if existing_player:
+            return False, "Spilleren findes allerede."
+
+        session.execute(
+            text("""
+                INSERT INTO players (
+                    name,
+                    elo,
+                    matches_played,
+                    wins,
+                    losses
+                )
+                VALUES (
+                    :name,
+                    :elo,
+                    0,
+                    0,
+                    0
+                )
+            """),
+            {
+                "name": clean_name,
+                "elo": START_ELO
+            }
+        )
+
+        session.commit()
+
+    return True, f"{clean_name} er oprettet."
+
 
 def register_match(
     players,
@@ -322,12 +444,10 @@ def register_match(
             }
         )
 
-        # Beregn hele ranglisten på ny
         recalculate_ranking(session)
-
         session.commit()
 
-    st.success(
+    st.session_state["message"] = (
         "🏆 Kampen er registreret!"
     )
 
@@ -335,102 +455,147 @@ def register_match(
 
 
 # =========================================================
-# MENU
+# TOP-NAVIGATION
 # =========================================================
 
-st.sidebar.title(
-    "🎾 Middelfart Padelteam"
-)
+if "page" not in st.session_state:
+    st.session_state.page = "Rangliste"
 
-page = st.sidebar.radio(
-    "Menu",
-    [
+nav1, nav2 = st.columns(2)
+
+with nav1:
+    if st.button(
         "🏆 Rangliste",
-        "➕ Registrer kamp",
-        "📋 Kamphistorik"
-    ]
-)
+        use_container_width=True
+    ):
+        st.session_state.page = "Rangliste"
+        st.rerun()
+
+with nav2:
+    if st.button(
+        "🎾 Kamp",
+        use_container_width=True
+    ):
+        st.session_state.page = "Kamp"
+        st.rerun()
+
+nav3, nav4 = st.columns(2)
+
+with nav3:
+    if st.button(
+        "📋 Historik",
+        use_container_width=True
+    ):
+        st.session_state.page = "Historik"
+        st.rerun()
+
+with nav4:
+    if st.button(
+        "👤 Spillere",
+        use_container_width=True
+    ):
+        st.session_state.page = "Spillere"
+        st.rerun()
+
+st.divider()
+
+page = st.session_state.page
+
+
+# =========================================================
+# EVENTUEL BESKED
+# =========================================================
+
+if "message" in st.session_state:
+
+    st.success(
+        st.session_state.pop("message")
+    )
 
 
 # =========================================================
 # RANGLISTE
 # =========================================================
 
-if page == "🏆 Rangliste":
+if page == "Rangliste":
 
-    st.title(
-        "🎾 Middelfart Padelteam"
-    )
-
-    st.subheader(
-        "🏆 Rangliste"
-    )
+    st.title("🎾 Middelfart Padelteam")
+    st.subheader("Rangliste")
 
     players = get_players()
 
     if players.empty:
-
         st.info(
             "Der er endnu ingen spillere."
         )
 
     else:
 
-        table = players.copy()
+        for index, row in players.iterrows():
 
-        table["Placering"] = range(
-            1,
-            len(table) + 1
-        )
+            position = index + 1
 
-        table["Win %"] = table.apply(
-            lambda row: round(
-                row["wins"]
-                / row["matches_played"]
-                * 100,
-                1
+            if position == 1:
+                medal = "🥇"
+            elif position == 2:
+                medal = "🥈"
+            elif position == 3:
+                medal = "🥉"
+            else:
+                medal = f"{position}."
+
+            matches_played = int(
+                row["matches_played"]
             )
-            if row["matches_played"] > 0
-            else 0,
-            axis=1
-        )
 
-        table = table.rename(
-            columns={
-                "name": "Spiller",
-                "elo": "ELO",
-                "matches_played": "Kampe",
-                "wins": "Sejre",
-                "losses": "Nederlag"
-            }
-        )
+            wins = int(
+                row["wins"]
+            )
 
-        st.dataframe(
-            table[
-                [
-                    "Placering",
-                    "Spiller",
-                    "ELO",
-                    "Kampe",
-                    "Sejre",
-                    "Nederlag",
-                    "Win %"
-                ]
-            ],
-            hide_index=True,
-            use_container_width=True
-        )
+            losses = int(
+                row["losses"]
+            )
+
+            if matches_played > 0:
+                win_pct = round(
+                    wins /
+                    matches_played *
+                    100
+                )
+            else:
+                win_pct = 0
+
+            st.markdown(
+                f"""
+                <div class="player-card">
+                    <div>
+                        <span class="rank-number">
+                            {medal}
+                        </span>
+                        <span class="player-name">
+                            {row["name"]}
+                        </span>
+                    </div>
+                    <div class="player-stats">
+                        ELO {int(row["elo"])}
+                        · {matches_played} kampe
+                        · {wins} sejre
+                        · {losses} nederlag
+                        · {win_pct}%
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
 
 # =========================================================
-# REGISTRER KAMP
+# KAMP
 # =========================================================
 
-elif page == "➕ Registrer kamp":
+elif page == "Kamp":
 
-    st.title(
-        "➕ Registrer kamp"
-    )
+    st.title("🎾 Registrer kamp")
 
     players = get_players()
 
@@ -447,39 +612,37 @@ elif page == "➕ Registrer kamp":
 
         st.stop()
 
-    st.subheader(
-        "Hold 1"
-    )
+    st.subheader("Hold 1")
 
     t1p1 = st.selectbox(
         "Spiller 1",
         player_names,
-        key="t1p1"
+        key="mobile_t1p1"
     )
 
     t1p2 = st.selectbox(
         "Spiller 2",
         player_names,
         index=1,
-        key="t1p2"
+        key="mobile_t1p2"
     )
 
-    st.subheader(
-        "Hold 2"
-    )
+    st.markdown("### VS")
+
+    st.subheader("Hold 2")
 
     t2p1 = st.selectbox(
         "Spiller 1 ",
         player_names,
         index=2,
-        key="t2p1"
+        key="mobile_t2p1"
     )
 
     t2p2 = st.selectbox(
         "Spiller 2 ",
         player_names,
         index=3,
-        key="t2p2"
+        key="mobile_t2p2"
     )
 
     selected = [
@@ -497,151 +660,45 @@ elif page == "➕ Registrer kamp":
 
         st.stop()
 
-    data = {
-        row["name"]: row
-        for _, row in players[
-            players["name"].isin(
-                selected
-            )
-        ].iterrows()
-    }
-
-    team1_rating = round(
-        (
-            int(
-                data[t1p1]["elo"]
-            )
-            +
-            int(
-                data[t1p2]["elo"]
-            )
-        ) / 2
-    )
-
-    team2_rating = round(
-        (
-            int(
-                data[t2p1]["elo"]
-            )
-            +
-            int(
-                data[t2p2]["elo"]
-            )
-        ) / 2
-    )
-
-    chance1 = expected_score(
-        team1_rating,
-        team2_rating
-    )
-
-    chance2 = 1 - chance1
-
     st.divider()
 
-    col1, col2 = st.columns(2)
+    st.subheader("Hvem vandt?")
 
-    with col1:
-
-        st.markdown(
-            "### Hold 1"
+    if st.button(
+        f"🏆 {t1p1} + {t1p2}",
+        type="primary",
+        use_container_width=True
+    ):
+        register_match(
+            players,
+            t1p1,
+            t1p2,
+            t2p1,
+            t2p2,
+            1
         )
 
-        st.write(
-            f"**{t1p1}**"
+    if st.button(
+        f"🏆 {t2p1} + {t2p2}",
+        use_container_width=True
+    ):
+        register_match(
+            players,
+            t1p1,
+            t1p2,
+            t2p1,
+            t2p2,
+            2
         )
-
-        st.write(
-            f"**{t1p2}**"
-        )
-
-        st.caption(
-            f"Gennemsnitlig ELO: "
-            f"{team1_rating}"
-        )
-
-        st.metric(
-            "Forventet vinderchance",
-            f"{chance1 * 100:.0f}%"
-        )
-
-    with col2:
-
-        st.markdown(
-            "### Hold 2"
-        )
-
-        st.write(
-            f"**{t2p1}**"
-        )
-
-        st.write(
-            f"**{t2p2}**"
-        )
-
-        st.caption(
-            f"Gennemsnitlig ELO: "
-            f"{team2_rating}"
-        )
-
-        st.metric(
-            "Forventet vinderchance",
-            f"{chance2 * 100:.0f}%"
-        )
-
-    st.divider()
-
-    st.subheader(
-        "Hvem vandt?"
-    )
-
-    button1, button2 = (
-        st.columns(2)
-    )
-
-    with button1:
-
-        if st.button(
-            "🏆 Hold 1 vandt",
-            type="primary",
-            use_container_width=True
-        ):
-
-            register_match(
-                players,
-                t1p1,
-                t1p2,
-                t2p1,
-                t2p2,
-                1
-            )
-
-    with button2:
-
-        if st.button(
-            "🏆 Hold 2 vandt",
-            use_container_width=True
-        ):
-
-            register_match(
-                players,
-                t1p1,
-                t1p2,
-                t2p1,
-                t2p2,
-                2
-            )
 
 
 # =========================================================
-# KAMPHISTORIK
+# HISTORIK
 # =========================================================
 
-elif page == "📋 Kamphistorik":
+elif page == "Historik":
 
-    st.title(
-        "📋 Kamphistorik"
-    )
+    st.title("📋 Kamphistorik")
 
     matches = conn.query(
         """
@@ -701,84 +758,70 @@ elif page == "📋 Kamphistorik":
             )
 
             team1 = (
-                f"{match['team1_player1']} & "
+                f"{match['team1_player1']} + "
                 f"{match['team1_player2']}"
             )
 
             team2 = (
-                f"{match['team2_player1']} & "
+                f"{match['team2_player1']} + "
                 f"{match['team2_player2']}"
             )
 
             if winner == 1:
                 winner_text = team1
+                new_winner = 2
+                new_winner_text = team2
             else:
                 winner_text = team2
+                new_winner = 1
+                new_winner_text = team1
 
-            st.markdown(
-                f"**{team1}**  vs  "
-                f"**{team2}**"
-            )
-
-            st.write(
-                f"🏆 Vinder: "
-                f"**{winner_text}**"
-            )
-
-            st.caption(
-                match[
-                    "match_date"
-                ].strftime(
+            date_text = (
+                match["match_date"]
+                .strftime(
                     "%d-%m-%Y %H:%M"
                 )
             )
 
-            col1, col2 = (
-                st.columns(2)
+            st.markdown(
+                f"""
+                <div class="match-card">
+                    <strong>{team1}</strong><br>
+                    mod<br>
+                    <strong>{team2}</strong><br><br>
+                    🏆 Vinder:
+                    <strong>{winner_text}</strong><br>
+                    <span style="opacity:0.7">
+                        {date_text}
+                    </span>
+                </div>
+                """,
+                unsafe_allow_html=True
             )
 
-            # ---------------------------------
-            # RET VINDER
-            # ---------------------------------
+            col1, col2 = st.columns(2)
 
             with col1:
 
-                if winner == 1:
-                    new_winner = 2
-                    new_winner_text = team2
-                else:
-                    new_winner = 1
-                    new_winner_text = team1
-
                 if st.button(
-                    "✏️ Ret vinder",
+                    "✏️ Ret",
                     key=f"edit_{match_id}",
                     use_container_width=True
                 ):
-
                     st.session_state[
                         "edit_match"
                     ] = match_id
 
-            # ---------------------------------
-            # SLET KAMP
-            # ---------------------------------
-
             with col2:
 
                 if st.button(
-                    "🗑️ Slet kamp",
+                    "🗑️ Slet",
                     key=f"delete_{match_id}",
                     use_container_width=True
                 ):
-
                     st.session_state[
                         "delete_match"
                     ] = match_id
-
-            # ---------------------------------
-            # BEKRÆFT RETTELSE
-            # ---------------------------------
 
             if (
                 st.session_state.get(
@@ -792,77 +835,61 @@ elif page == "📋 Kamphistorik":
                     f"{new_winner_text}?"
                 )
 
-                yes, no = (
-                    st.columns(2)
-                )
+                if st.button(
+                    "Ja, ret vinderen",
+                    key=f"confirm_edit_{match_id}",
+                    type="primary",
+                    use_container_width=True
+                ):
 
-                with yes:
+                    with conn.session as session:
 
-                    if st.button(
-                        "Ja, ret vinderen",
-                        key=(
-                            f"confirm_edit_"
-                            f"{match_id}"
-                        ),
-                        type="primary",
-                        use_container_width=True
-                    ):
-
-                        with conn.session as session:
-
-                            session.execute(
-                                text("""
-                                    UPDATE matches
-                                    SET winner = :winner
-                                    WHERE match_id =
-                                          :match_id
-                                """),
-                                {
-                                    "winner":
-                                        new_winner,
-                                    "match_id":
-                                        match_id
-                                }
-                            )
-
-                            recalculate_ranking(
-                                session
-                            )
-
-                            session.commit()
-
-                        st.session_state.pop(
-                            "edit_match",
-                            None
+                        session.execute(
+                            text("""
+                                UPDATE matches
+                                SET winner = :winner
+                                WHERE match_id =
+                                      :match_id
+                            """),
+                            {
+                                "winner":
+                                    new_winner,
+                                "match_id":
+                                    match_id
+                            }
                         )
 
-                        st.success(
-                            "Vinderen er rettet."
+                        recalculate_ranking(
+                            session
                         )
 
-                        st.rerun()
+                        session.commit()
 
-                with no:
+                    st.session_state.pop(
+                        "edit_match",
+                        None
+                    )
 
-                    if st.button(
-                        "Annuller",
-                        key=(
-                            f"cancel_edit_"
-                            f"{match_id}"
-                        ),
-                        use_container_width=True
-                    ):
+                    st.session_state[
+                        "message"
+                    ] = (
+                        "✅ Vinderen er rettet."
+                    )
 
-                        st.session_state.pop(
-                            "edit_match",
-                            None
-                        )
+                    st.rerun()
 
-                        st.rerun()
+                if st.button(
+                    "Annuller",
+                    key=f"cancel_edit_{match_id}",
+                    use_container_width=True
+                ):
 
-            # ---------------------------------
-            # BEKRÆFT SLETNING
-            # ---------------------------------
+                    st.session_state.pop(
+                        "edit_match",
+                        None
+                    )
+
+                    st.rerun()
 
             if (
                 st.session_state.get(
@@ -872,90 +899,139 @@ elif page == "📋 Kamphistorik":
             ):
 
                 st.warning(
-                    "Er du sikker på, at "
-                    "kampen skal slettes?"
+                    "Er du sikker på, at kampen skal slettes?"
                 )
 
-                yes, no = (
-                    st.columns(2)
-                )
+                if st.button(
+                    "Ja, slet kampen",
+                    key=f"confirm_delete_{match_id}",
+                    type="primary",
+                    use_container_width=True
+                ):
 
-                with yes:
+                    with conn.session as session:
 
-                    if st.button(
-                        "Ja, slet kampen",
-                        key=(
-                            f"confirm_delete_"
-                            f"{match_id}"
-                        ),
-                        type="primary",
-                        use_container_width=True
-                    ):
-
-                        with conn.session as session:
-
-                            # Fjern ELO-historikken
-                            # for kampen først
-                            session.execute(
-                                text("""
-                                    DELETE FROM
-                                        elo_history
-                                    WHERE match_id =
-                                          :match_id
-                                """),
-                                {
-                                    "match_id":
-                                        match_id
-                                }
-                            )
-
-                            # Slet selve kampen
-                            session.execute(
-                                text("""
-                                    DELETE FROM matches
-                                    WHERE match_id =
-                                          :match_id
-                                """),
-                                {
-                                    "match_id":
-                                        match_id
-                                }
-                            )
-
-                            # Genberegn alt
-                            recalculate_ranking(
-                                session
-                            )
-
-                            session.commit()
-
-                        st.session_state.pop(
-                            "delete_match",
-                            None
+                        session.execute(
+                            text("""
+                                DELETE FROM elo_history
+                                WHERE match_id =
+                                      :match_id
+                            """),
+                            {
+                                "match_id":
+                                    match_id
+                            }
                         )
 
-                        st.success(
-                            "Kampen er slettet."
+                        session.execute(
+                            text("""
+                                DELETE FROM matches
+                                WHERE match_id =
+                                      :match_id
+                            """),
+                            {
+                                "match_id":
+                                    match_id
+                            }
                         )
 
-                        st.rerun()
-
-                with no:
-
-                    if st.button(
-                        "Annuller",
-                        key=(
-                            f"cancel_delete_"
-                            f"{match_id}"
-                        ),
-                        use_container_width=True
-                    ):
-
-                        st.session_state.pop(
-                            "delete_match",
-                            None
+                        recalculate_ranking(
+                            session
                         )
 
-                        st.rerun()
+                        session.commit()
+
+                    st.session_state.pop(
+                        "delete_match",
+                        None
+                    )
+
+                    st.session_state[
+                        "message"
+                    ] = (
+                        "🗑️ Kampen er slettet."
+                    )
+
+                    st.rerun()
+
+                if st.button(
+                    "Annuller",
+                    key=f"cancel_delete_{match_id}",
+                    use_container_width=True
+                ):
+
+                    st.session_state.pop(
+                        "delete_match",
+                        None
+                    )
+
+                    st.rerun()
 
             st.divider()
+
+
+# =========================================================
+# SPILLERE
+# =========================================================
+
+elif page == "Spillere":
+
+    st.title("👤 Spillere")
+
+    st.subheader(
+        "Opret ny spiller"
+    )
+
+    new_player_name = st.text_input(
+        "Navn",
+        placeholder="Fx Mads Jensen"
+    )
+
+    if st.button(
+        "➕ Opret spiller",
+        type="primary",
+        use_container_width=True
+    ):
+
+        success, message = create_player(
+            new_player_name
+        )
+
+        if success:
+
+            st.session_state[
+                "message"
+            ] = f"✅ {message}"
+
+            st.rerun()
+
+        else:
+
+            st.error(
+                message
+            )
+
+    st.divider()
+
+    st.subheader(
+        "Alle spillere"
+    )
+
+    players = get_players()
+
+    for _, row in players.iterrows():
+
+        st.markdown(
+            f"""
+            <div class="player-card">
+                <div class="player-name">
+                    {row["name"]}
+                </div>
+                <div class="player-stats">
+                    ELO {int(row["elo"])}
+                    · {int(row["matches_played"])} kampe
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
